@@ -8,3 +8,8 @@ dependencies = [
     "torch>=2.6.0",
     "torchvision>=0.21.0",
 ]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+]
