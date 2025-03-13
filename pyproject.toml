@@ -5,11 +5,14 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "torch>=2.6.0",
-    "torchvision>=0.21.0",
+    "torch>=2.8.0.dev20250313",
+    "torchvision>=0.22.0.dev20250313",
 ]
 
 [dependency-groups]
 dev = [
     "ipykernel>=6.29.5",
 ]
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/nightly/cu128"
