@@ -175,3 +175,6 @@ cython_debug/
 
 # custom for this proj, to exclude downloaded MNIST data
 data/
+
+# also, custom to ignore model weight files using PyTorch's standard extension of pth
+*.pth 
