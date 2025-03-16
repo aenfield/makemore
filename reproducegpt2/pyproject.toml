@@ -1,5 +1,5 @@
 [project]
-name = "makemore"
+name = "anotherquickie"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -7,17 +7,13 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy", # doesn't seem to be an official dep of torch, but I got a warning complaining about no numpy when creating a tensor on the Macbook/CPU build of pytorch, and specifying numpy manually fixed it
     "torch",
-    "torchvision", # the quickstart I used to validate GPU and get something running uses the FashionMNIST dataset
+    "transformers",
 ]
 
 # as of 3/13/25 support for CUDA 12.8 (which the 5080 requires) is only in nightly torch builds
 # and we need a separate provider for MacOS since no NVidia GPU; the CPU build supports MPS
 [tool.uv.sources]
 torch = [
-    { index = "torch-cpu", marker = "platform_system == 'Darwin'"},
-    { index = "torch-gpu-nightly", marker = "platform_system == 'Linux'"},
-]
-torchvision = [
     { index = "torch-cpu", marker = "platform_system == 'Darwin'"},
     { index = "torch-gpu-nightly", marker = "platform_system == 'Linux'"},
 ]
