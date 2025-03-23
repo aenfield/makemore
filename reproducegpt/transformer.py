@@ -24,6 +24,17 @@ eval_iters = 200 # how many batches to average over when estimating loss/perform
 n_embd = 32
 n_head = 4
 n_layer = 4
+dropout = 0.0
+
+# redefine some params for scale-up - I'll leave the ones above alive and just overwrite
+# them here for ease of (un)commenting out.
+batch_size = 64
+block_size = 256
+eval_interval = 500
+learning_rate = 3e-4
+n_embd = 384
+n_head = 6
+n_layer = 6
 dropout = 0.2
 # --------
 
