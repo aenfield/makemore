@@ -52,6 +52,11 @@ n_layer = 12
 # I can is most important, so I'll try 40, which gives me right at ~90%.
 batch_size = 40 
 
+# With AMP the training kept hanging w/ no GPU activity, but w/ AMP turned off it'd run to completion, and w/ less
+# GPU memory usage (the opposite of what I'd expect?), so I'll try w/ a bigger batch size and no AMP. 56 gives 
+# ~88% GPU memory usage w/o AMP.
+batch_size = 56
+max_iters = 10000
 # --------
 
 torch.manual_seed(1337)
@@ -153,21 +158,6 @@ class FeedForward(nn.Module):
 
     def forward(self, x):
         return self.net(x)
-    
-# don't need this because we use the pytorch stock impl
-# class LayerNorm(nn.Module):
-
-#     def __init__(self, dim, eps=1e-5):
-#         self.eps = eps
-#         self.gamma = torch.ones(dim)
-#         self.beta = torch.zeros(dim)
-
-#     def forward(self, x):
-#         xmean = x.mean(1, keepdim=True)
-#         xvar = x.var(1, keepdim=True)
-#         xhat = (x - xmean) / torch.sqrt(xvar + self.eps)
-#         self.out = self.gamma * xhat + self.beta
-#         return self.out
 
 class Block(nn.Module):
     """ Transformer block: communication with self-attention followed by computation with feed-forward. """
@@ -283,7 +273,7 @@ end_time = time.perf_counter()
 seconds_elapsed = end_time - start_time
 print(f'Training time: {seconds_elapsed:.3f} seconds, {seconds_elapsed / max_iters:.4f}s/step.')
 
-torch.save(model.state_dict(), f'model_weights_{count_parameters(model)}.pth')
+torch.save(model.state_dict(), f'model_weights_{count_parameters(model)}_{batch_size}batch_{max_iters}iters.pth')
 
 # and when done, generate from the trained model, starting with a single newline - token w/ idx 0 - as context
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
