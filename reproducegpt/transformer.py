@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+import time
+
 # Based on Andrej Karpathy "Let's build GPT" at https://www.youtube.com/watch?v=kCc8FmEb1nY&t=528s
 # mostly his code; for a lot of the initial stuff I have more notes about the code, that I took, in gpt-dev.ipynb
 
@@ -190,11 +192,16 @@ class TransformerLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
     
+def count_parameters(model):
+    return torch.nn.utils.parameters_to_vector(model.parameters()).numel()
 
 model = TransformerLanguageModel()
 m = model.to(device)
+print(f'Parameter count: {count_parameters(m)}.')
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+
+start_time = time.perf_counter()
 
 # and train
 for iter in range(max_iters):
@@ -215,5 +222,10 @@ for iter in range(max_iters):
 # and when done, generate from the trained model, starting with a single newline - token w/ idx 0 - as context
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
 print(decode(m.generate(context, max_new_tokens=200)[0].tolist()))
+
+end_time = time.perf_counter()
+
+seconds_elapsed = end_time - start_time
+print(f'Execution time: {seconds_elapsed:.3f} seconds, {seconds_elapsed / max_iters:.4f}s/step.')
 
 
