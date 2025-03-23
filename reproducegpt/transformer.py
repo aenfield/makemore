@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.amp import autocast, GradScaler # try out AMP (automatic mixed precision)
 
 import time
 
@@ -36,6 +37,8 @@ n_embd = 384
 n_head = 6
 n_layer = 6
 dropout = 0.2
+
+# max_iters = 10
 # --------
 
 torch.manual_seed(1337)
@@ -227,11 +230,15 @@ class TransformerLanguageModel(nn.Module):
 def count_parameters(model):
     return torch.nn.utils.parameters_to_vector(model.parameters()).numel()
 
-model = TransformerLanguageModel()
-m = model.to(device)
-print(f'Parameter count: {count_parameters(m)}.')
+model_create = TransformerLanguageModel()
+model = model_create.to(device)
+print(f'Parameter count: {count_parameters(model)}.')
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+
+use_amp = device == torch.device('cuda') # AMP only works on CUDA devices (some of it might work on MPS but I won't figure that out for now since I'll do bigger training w/ NVidia hardware, likely)
+print(f'Using AMP? {use_amp}.')
+scaler = GradScaler(device.type)
 
 start_time = time.perf_counter()
 
@@ -240,24 +247,34 @@ for iter in range(max_iters):
     # periodically eval the loss on train and val sets
     if iter % eval_interval == 0:
         losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        print(f"Step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}.")
 
-    # sample a bunch of data
     xb, yb = get_batch('train')
+    xb, yb = xb.to(device), yb.to(device)
 
-    # eval the loss on the sampled data
-    logits, loss = model(xb, yb)
     optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
 
-# and when done, generate from the trained model, starting with a single newline - token w/ idx 0 - as context
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(m.generate(context, max_new_tokens=200)[0].tolist()))
+    if use_amp:
+        with autocast(device_type=device.type):
+            logits, loss = model(xb, yb)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        logits, loss = model(xb, yb)
+        loss.backward()
+        optimizer.step()
 
 end_time = time.perf_counter()
 
 seconds_elapsed = end_time - start_time
-print(f'Execution time: {seconds_elapsed:.3f} seconds, {seconds_elapsed / max_iters:.4f}s/step.')
+print(f'Training time: {seconds_elapsed:.3f} seconds, {seconds_elapsed / max_iters:.4f}s/step.')
+
+torch.save(model.state_dict(), f'model_weights_{count_parameters(model)}.pth')
+
+# and when done, generate from the trained model, starting with a single newline - token w/ idx 0 - as context
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
+print(decode(model.generate(context, max_new_tokens=200)[0].tolist()))
+
 
 
