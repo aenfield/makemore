@@ -11,9 +11,11 @@ from torch.nn import functional as F
 # hyper params
 batch_size = 32 # how many independent seqs we process in parallel
 block_size = 8 # what's the max context length for prediction?
-max_iters = 500
+# max_iters = 500
+max_iters = 5000 # higher than orig ~3K because self-attention has a lower learning rate
 eval_interval = 300 # eval and output perf measure how often? per this number of iters
-learning_rate = 1e-2
+#learning_rate = 1e-2
+learning_rate = 1e-3 # decreased a bit because self-attention needs to go a bit slower
 device = torch.accelerator.current_accelerator() if torch.accelerator.is_available else 'cpu'
 (print(f"Training on {device}."))
 eval_iters = 200 # how many batches to average over when estimating loss/performance
@@ -66,7 +68,31 @@ def estimate_loss():
     model.train() # and turn back on training mode
     return out
 
-# very simple bigram model
+class Head(nn.Module):
+    """ One self-attention head. """
+
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+    def forward(self, x):
+        B, T, C = x.shape
+        k = self.key(x)   # (B, T, C)
+        q = self.query(x) # (B, T, C)
+        # and compute attention scores - 'affinities'
+        wei = q @ k.transpose(-2, -1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
+        wei = F.softmax(wei, dim=-1) # (B, T, T)
+        # do weighted agg of the values
+        v = self.value(x) # (B, T, C)
+        out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
+        return out
+
+
+# very simple transformer model
 class TransformerLanguageModel(nn.Module):
 
     def __init__(self):
@@ -74,6 +100,7 @@ class TransformerLanguageModel(nn.Module):
         # read the logits for the next token directly from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd) # each position in the context/block gets its own embedding vector
+        self.sa_head = Head(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
@@ -84,6 +111,7 @@ class TransformerLanguageModel(nn.Module):
         tok_emb = self.token_embedding_table(idx) # (B,T,C) # C here is n_embd
         pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
         x = tok_emb + pos_emb # (B, T, C) # combine emb for tokens and position, due to broadcasting (T,C) across the batches
+        x = self.sa_head(x) # apply one self-attention head (B, T, C)
         logits = self.lm_head(x) # (B,T,C) # C is here vocab_size
 
         if targets is None:
@@ -99,8 +127,10 @@ class TransformerLanguageModel(nn.Module):
     def generate(self, idx, max_new_tokens):
         # idx is a (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
+            # crop idx to the last block_size tokens - position embedding's only set up for block_size tokens, we only work w/ that many 
+            idx_cond = idx[:, -block_size:]
             # predict for every location in every sequence
-            logits, loss = self(idx)
+            logits, loss = self(idx_cond)
             # focus on the last item in each sequence
             logits = logits[:, -1, :] # (B, C)
             # apply softmax op to get probs from non-normalized logits
