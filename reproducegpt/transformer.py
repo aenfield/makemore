@@ -250,6 +250,7 @@ print(f'Parameter count: {count_parameters(model)}.')
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
 use_amp = device == torch.device('cuda') # AMP only works on CUDA devices (some of it might work on MPS but I won't figure that out for now since I'll do bigger training w/ NVidia hardware, likely)
+use_amp = False
 print(f'Using AMP? {use_amp}.')
 scaler = GradScaler(device.type)
 
