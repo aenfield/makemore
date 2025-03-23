@@ -28,7 +28,11 @@ n_layer = 4
 dropout = 0.0
 
 # redefine some params for scale-up - I'll leave the ones above alive and just overwrite
-# them here for ease of (un)commenting out.
+# them here for ease of (un)commenting out. These are the ones that Karpathy suggested and that took
+# his A100 ~15m to train on (at the time of the lecture, in early 2023). My MacBook Pro M3 18GB took
+# 1hr15m to train on these, and my 5080 on WSL/Ubuntu only ~7.5m. Then, when I added AMP it reduced
+# the amt of training time by ~18% to ~6m. Each of these achieved a validation loss of ~1.48 or so 
+# with 5000 iterations. 
 batch_size = 64
 block_size = 256
 eval_interval = 500
@@ -38,7 +42,16 @@ n_head = 6
 n_layer = 6
 dropout = 0.2
 
-# max_iters = 10
+# now, given the quick time noted above and the hopeful additional memory headroom enabled by AMP, I'll
+# try scaling up further using the settings recommended by ChatGPT when I had it take a look at the code.
+n_embd = 768
+n_head = 12
+n_layer = 12
+# w/ the above 64 and also 48 batch sizes I had GPU memory usage at ~95% when ChatGPT says I want it 80-90%; 
+# 32 gave ~72%, and ChatGPT says I don't need batch size to be multiples of 2 and making sure to use all the memory
+# I can is most important, so I'll try 40, which gives me right at ~90%.
+batch_size = 40 
+
 # --------
 
 torch.manual_seed(1337)
@@ -64,7 +77,7 @@ val_data = data[n:]
 
 # load data
 def get_batch(split):
-    # gen a small batch of data of data of inputs x and targets y - see gpt-dev for details
+    # gen a batch of data of data of inputs x and targets y - see gpt-dev for details
     data = train_data if split == 'train' else val_data
     ix = torch.randint(len(data) - block_size, (batch_size,))
     x = torch.stack([data[i:i + block_size] for i in ix])
@@ -250,7 +263,6 @@ for iter in range(max_iters):
         print(f"Step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}.")
 
     xb, yb = get_batch('train')
-    xb, yb = xb.to(device), yb.to(device)
 
     optimizer.zero_grad(set_to_none=True)
 
