@@ -91,6 +91,16 @@ class Head(nn.Module):
         out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
         return out
 
+class MultiHeadAttention(nn.Module):
+    """ Multiple self-attention heads in parallel. """
+
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+
+    def forward(self, x):
+        return torch.cat([h(x) for h in self.heads], dim=-1)
+
 
 # very simple transformer model
 class TransformerLanguageModel(nn.Module):
@@ -100,7 +110,7 @@ class TransformerLanguageModel(nn.Module):
         # read the logits for the next token directly from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd) # each position in the context/block gets its own embedding vector
-        self.sa_head = Head(n_embd)
+        self.sa_heads = MultiHeadAttention(4, n_embd//4) # so, four 8D self-attention heads
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
@@ -111,7 +121,7 @@ class TransformerLanguageModel(nn.Module):
         tok_emb = self.token_embedding_table(idx) # (B,T,C) # C here is n_embd
         pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
         x = tok_emb + pos_emb # (B, T, C) # combine emb for tokens and position, due to broadcasting (T,C) across the batches
-        x = self.sa_head(x) # apply one self-attention head (B, T, C)
+        x = self.sa_heads(x) # apply to all the self-attention heads (B, T, C)
         logits = self.lm_head(x) # (B,T,C) # C is here vocab_size
 
         if targets is None:
