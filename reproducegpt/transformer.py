@@ -42,8 +42,8 @@ n_head = 6
 n_layer = 6
 dropout = 0.2
 
-# now, given the quick time noted above and the hopeful additional memory headroom enabled by AMP, I'll
-# try scaling up further using the settings recommended by ChatGPT when I had it take a look at the code.
+# # now, given the quick time noted above and the hopeful additional memory headroom enabled by AMP, I'll
+# # try scaling up further using the settings recommended by ChatGPT when I had it take a look at the code.
 n_embd = 768
 n_head = 12
 n_layer = 12
@@ -52,14 +52,26 @@ n_layer = 12
 # I can is most important, so I'll try 40, which gives me right at ~90%.
 batch_size = 40 
 
-# With AMP the training kept hanging w/ no GPU activity, but w/ AMP turned off it'd run to completion, and w/ less
-# GPU memory usage (the opposite of what I'd expect?), so I'll try w/ a bigger batch size and no AMP. 56 gives 
-# ~88% GPU memory usage w/o AMP.
+# # With AMP the training kept hanging w/ no GPU activity, but w/ AMP turned off it'd run to completion, and w/ less
+# # GPU memory usage (the opposite of what I'd expect?), so I'll try w/ a bigger batch size and no AMP. 56 gives 
+# # ~88% GPU memory usage w/o AMP. And... the model crazy overfits pretty quickly... I get to a loss of 1.53 at 3000
+# # iterations and then it heads back up pretty quickly and by 10K iterations I'm at 3.26. The generated text even w/
+# # the overfit model seems good - maybe better than I saw before? - so now I'm curious about what the text from the
+# # model w/ the best val loss would be, which means I need to manually tune params so it ends before it overfits, or
+# # just implement simple early stopping. I'll try the latter.
 batch_size = 56
 max_iters = 10000
+
+# I'll try w/ early stopping and saving the best model.
+best_val_loss = float('inf')
+max_patience = 3
+patience_counter = 0 
+
+# now I'll try again w/ the crazy complicated/deep network
+eval_interval = 250 
 # --------
 
-torch.manual_seed(1337)
+# torch.manual_seed(1337)
 
 # !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 with open('input.txt', 'r', encoding='utf-8') as f:
@@ -233,6 +245,10 @@ class TransformerLanguageModel(nn.Module):
 def count_parameters(model):
     return torch.nn.utils.parameters_to_vector(model.parameters()).numel()
 
+def save_model_weights(model, iter, in_training=False):
+    torch.save(model.state_dict(), f'model_weights_{count_parameters(model)}_{batch_size}batch_{in_training}intraining.pth')
+
+
 model_create = TransformerLanguageModel()
 model = model_create.to(device)
 print(f'Parameter count: {count_parameters(model)}.')
@@ -248,10 +264,21 @@ start_time = time.perf_counter()
 
 # and train
 for iter in range(max_iters):
-    # periodically eval the loss on train and val sets
+    # periodically eval the loss on train and val sets and consider stopping early
     if iter % eval_interval == 0:
         losses = estimate_loss()
         print(f"Step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}.")
+
+        if losses['val'] < best_val_loss:
+            best_val_loss = losses['val']
+            patience_counter = 0
+            save_model_weights(model, iter, in_training=True)
+        else:
+            patience_counter += 1
+            print(f'No val loss improvement. Patience: {patience_counter}/{max_patience}')
+            if patience_counter >= max_patience:
+                print('Early stopping triggered - stopping.')
+                break
 
     xb, yb = get_batch('train')
 
@@ -273,7 +300,8 @@ end_time = time.perf_counter()
 seconds_elapsed = end_time - start_time
 print(f'Training time: {seconds_elapsed:.3f} seconds, {seconds_elapsed / max_iters:.4f}s/step.')
 
-torch.save(model.state_dict(), f'model_weights_{count_parameters(model)}_{batch_size}batch_{max_iters}iters.pth')
+save_model_weights(model, iter)
+# torch.save(model.state_dict(), f'model_weights_{count_parameters(model)}_{batch_size}batch_{max_iters}iters.pth')
 
 # and when done, generate from the trained model, starting with a single newline - token w/ idx 0 - as context
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
