@@ -4,6 +4,7 @@ from torch.nn import functional as F
 from torch.amp import autocast, GradScaler # try out AMP (automatic mixed precision)
 
 import time
+import argparse
 
 # Based on Andrej Karpathy "Let's build GPT" at https://www.youtube.com/watch?v=kCc8FmEb1nY&t=528s
 # mostly his code; for a lot of the initial stuff I have more notes about the code, that I took, in gpt-dev.ipynb
@@ -20,7 +21,7 @@ eval_interval = 300 # eval and output perf measure how often? per this number of
 #learning_rate = 1e-2
 learning_rate = 1e-3 # decreased a bit because self-attention needs to go a bit slower
 device = torch.accelerator.current_accelerator() if torch.accelerator.is_available else 'cpu'
-(print(f"Training on {device}."))
+(print(f"Using device: {device}."))
 eval_iters = 200 # how many batches to average over when estimating loss/performance
 n_embd = 32
 n_head = 4
@@ -62,11 +63,6 @@ batch_size = 40
 batch_size = 56
 max_iters = 10000
 
-# I'll try w/ early stopping and saving the best model.
-best_val_loss = float('inf')
-max_patience = 3
-patience_counter = 0 
-
 # now I'll try again w/ the crazy complicated/deep network
 eval_interval = 250 
 # --------
@@ -101,21 +97,6 @@ def get_batch(split):
     y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])
     x, y = x.to(device), y.to(device)
     return x, y
-
-@torch.no_grad()
-def estimate_loss():
-    # get a bunch of batches, calc the loss for each, and return the mean
-    out = {}
-    model.eval() # switch model to mode suitable for eval (turn off random dropout and use running estimates for batch norm)
-    for split in ['train', 'val']:
-        losses = torch.zeros(eval_iters)
-        for k in range(eval_iters):
-            X, Y = get_batch(split)
-            logits, loss = model(X, Y)
-            losses[k] = loss.item()
-        out[split] = losses.mean()
-    model.train() # and turn back on training mode
-    return out
 
 class Head(nn.Module):
     """ One self-attention head. """
@@ -226,86 +207,140 @@ class TransformerLanguageModel(nn.Module):
         return logits, loss
     
     def generate(self, idx, max_new_tokens):
-        # idx is a (B, T) array of indices in the current context
-        for _ in range(max_new_tokens):
-            # crop idx to the last block_size tokens - position embedding's only set up for block_size tokens, we only work w/ that many 
-            idx_cond = idx[:, -block_size:]
-            # predict for every location in every sequence
-            logits, loss = self(idx_cond)
-            # focus on the last item in each sequence
-            logits = logits[:, -1, :] # (B, C)
-            # apply softmax op to get probs from non-normalized logits
-            probs = F.softmax(logits, dim=-1) # (B, C)
-            # and sample to get a token
-            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
-            # append sampled index to the running sequence
-            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+        self.eval()
+        with torch.no_grad():
+            # idx is a (B, T) array of indices in the current context
+            for _ in range(max_new_tokens):
+                # crop idx to the last block_size tokens - position embedding's only set up for block_size tokens, we only work w/ that many 
+                idx_cond = idx[:, -block_size:]
+                # predict for every location in every sequence
+                logits, loss = self(idx_cond)
+                # focus on the last item in each sequence
+                logits = logits[:, -1, :] # (B, C)
+                # apply softmax op to get probs from non-normalized logits
+                probs = F.softmax(logits, dim=-1) # (B, C)
+                # and sample to get a token
+                idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+                # append sampled index to the running sequence
+                idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+        self.train()
+
         return idx
     
+    @torch.no_grad()
+    def estimate_loss(self):
+        # get a bunch of batches, calc the loss for each, and return the mean
+        out = {}
+        self.eval() # switch model to mode suitable for eval (turn off random dropout and use running estimates for batch norm)
+        for split in ['train', 'val']:
+            losses = torch.zeros(eval_iters)
+            for k in range(eval_iters):
+                X, Y = get_batch(split)
+                logits, loss = self(X, Y)
+                losses[k] = loss.item()
+            out[split] = losses.mean()
+        self.train() # and turn back on training mode
+        return out
+
+
+# these next little funcs could all be model instance methods but I'll leave them as they cam from Karpathy/as they resulted from simple DRY
 def count_parameters(model):
     return torch.nn.utils.parameters_to_vector(model.parameters()).numel()
 
 def save_model_weights(model, iter, in_training=False):
     torch.save(model.state_dict(), f'model_weights_{count_parameters(model)}_{batch_size}batch_{in_training}intraining.pth')
 
+def generate_tokens(model, token_count_to_generate):
+    # and when done, generate from the trained model, starting with a single newline - token w/ idx 0 - as context
+    context = torch.zeros((1, 1), dtype=torch.long, device=device)
+    return decode(model.generate(context, max_new_tokens=token_count_to_generate)[0].tolist())
 
-model_create = TransformerLanguageModel()
-model = model_create.to(device)
-print(f'Parameter count: {count_parameters(model)}.')
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+def train():
+    best_val_loss = float('inf')
+    max_patience = 3
+    patience_counter = 0 
 
-use_amp = device == torch.device('cuda') # AMP only works on CUDA devices (some of it might work on MPS but I won't figure that out for now since I'll do bigger training w/ NVidia hardware, likely)
-use_amp = False
-print(f'Using AMP? {use_amp}.')
-scaler = GradScaler(device.type)
+    model_create = TransformerLanguageModel()
+    model = model_create.to(device)
+    print(f'Parameter count: {count_parameters(model)}.')
 
-start_time = time.perf_counter()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-# and train
-for iter in range(max_iters):
-    # periodically eval the loss on train and val sets and consider stopping early
-    if iter % eval_interval == 0:
-        losses = estimate_loss()
-        print(f"Step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}.")
+    use_amp = device == torch.device('cuda') # AMP only works on CUDA devices (some of it might work on MPS but I won't figure that out for now since I'll do bigger training w/ NVidia hardware, likely)
+    use_amp = False
+    print(f'Using AMP? {use_amp}.')
+    scaler = GradScaler(device.type)
 
-        if losses['val'] < best_val_loss:
-            best_val_loss = losses['val']
-            patience_counter = 0
-            save_model_weights(model, iter, in_training=True)
+    start_time = time.perf_counter()
+
+    # and train
+    for iter in range(max_iters):
+        # periodically eval the loss on train and val sets and consider stopping early
+        if iter % eval_interval == 0:
+            losses = model.estimate_loss()
+            print(f"Step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}.")
+
+            if losses['val'] < best_val_loss:
+                best_val_loss = losses['val']
+                patience_counter = 0
+                save_model_weights(model, iter, in_training=True)
+            else:
+                patience_counter += 1
+                print(f'No val loss improvement - patience: {patience_counter}/{max_patience}.')
+                if patience_counter >= max_patience:
+                    print('Early stopping triggered - stopping.')
+                    break
+
+        xb, yb = get_batch('train')
+
+        optimizer.zero_grad(set_to_none=True)
+
+        if use_amp:
+            with autocast(device_type=device.type):
+                logits, loss = model(xb, yb)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
         else:
-            patience_counter += 1
-            print(f'No val loss improvement. Patience: {patience_counter}/{max_patience}')
-            if patience_counter >= max_patience:
-                print('Early stopping triggered - stopping.')
-                break
-
-    xb, yb = get_batch('train')
-
-    optimizer.zero_grad(set_to_none=True)
-
-    if use_amp:
-        with autocast(device_type=device.type):
             logits, loss = model(xb, yb)
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-    else:
-        logits, loss = model(xb, yb)
-        loss.backward()
-        optimizer.step()
+            loss.backward()
+            optimizer.step()
 
-end_time = time.perf_counter()
+    end_time = time.perf_counter()
 
-seconds_elapsed = end_time - start_time
-print(f'Training time: {seconds_elapsed:.3f} seconds, {seconds_elapsed / max_iters:.4f}s/step.')
+    seconds_elapsed = end_time - start_time
+    print(f'Training time: {seconds_elapsed:.3f} seconds, {seconds_elapsed / max_iters:.4f}s/step.')
 
-save_model_weights(model, iter)
-# torch.save(model.state_dict(), f'model_weights_{count_parameters(model)}_{batch_size}batch_{max_iters}iters.pth')
+    save_model_weights(model, iter)
 
-# and when done, generate from the trained model, starting with a single newline - token w/ idx 0 - as context
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(model.generate(context, max_new_tokens=200)[0].tolist()))
+    print(generate_tokens(model, 200))
+
+def generate(weights_filename, token_count_to_generate):
+    # note that this'll only work when the model defined above is the same as what was used to train and get the 
+    # specified weights; since the Karpathy design hardcodes the config params (like number of heads, etc.) those have
+    # to be set correctly at the top of the file in order for this to work and to avoid "Error(s) in loading state_dict 
+    # for TransformerLanguageModel" errors; a better design for this kind of further expansion could be to persist/load 
+    # the model defn in some fashion probably combined w/ parameterizing model creation rather than making the config 
+    # params global vars as he does  
+    model = TransformerLanguageModel().to(device)
+    model.load_state_dict(torch.load(weights_filename, map_location=device))
+
+    print(generate_tokens(model, token_count_to_generate))
 
 
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('mode', choices=['train','generate'], nargs='?', default='train')
+    parser.add_argument('weights_filename', nargs='?')
+    parser.add_argument('--tokens', type=int, default=500)
+    args = parser.parse_args()
+
+    if args.mode == 'train':
+        train()
+    elif args.mode == 'generate':
+        if not args.weights_filename:
+            print('Error: need filename from which to load weights')
+            exit(1)
+        generate(args.weights_filename, args.tokens)
