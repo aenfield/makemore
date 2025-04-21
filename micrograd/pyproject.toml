@@ -1,0 +1,17 @@
+[project]
+name = "micrograd"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "graphviz",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5", # per uv docs to support running Jupyter w/ VS Code
+    # run Jupyter notebook with 'uv run --with jupyter jupyter notebook'
+]
