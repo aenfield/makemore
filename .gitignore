@@ -178,3 +178,5 @@ data/
 
 # also, custom to ignore model weight files using PyTorch's standard extension of pth
 *.pth 
+
+.DS_Store
